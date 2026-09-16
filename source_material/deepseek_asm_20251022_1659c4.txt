@@ -1,0 +1,874 @@
+!to "wireframe.prg", cbm
+!cpu 6502
+
+; ================================================================
+; C64 3D Wireframe Cube — CLEAN & STABLE
+; Build:   acme -f cbm -o wireframe.prg main.asm
+; Run:     SYS 49152
+; Notes:
+; - Code $C000.., Vars $C800.., Basic stub at $0801
+; - Bitmap: $2000, Screen: $0400, Bank 0 (CIA2PRA bits 0..1 = %11)
+; - Hi-res: D011.BMM=1, D016.MCOL=0, D018= $18 (screen=$0400, bmp=$2000)
+; ================================================================
+
+; ---------- Long-branch helpers (safe for ACME) ----------
+; Use when a conditional branch might be >±127 bytes. Keep '+' labels at col 1.
+!macro BEQ_L target {
+bne +
+jmp target
++
+}
+!macro BNE_L target {
+beq +
+jmp target
++
+}
+!macro BMI_L target {
+bpl +
+jmp target
++
+}
+!macro BPL_L target {
+bmi +
+jmp target
++
+}
+!macro BCS_L target {
+bcc +
+jmp target
++
+}
+!macro BCC_L target {
+bcs +
+jmp target
++
+}
+!macro BVS_L target {
+bvc +
+jmp target
++
+}
+!macro BVC_L target {
+bvs +
+jmp target
++
+}
+
+; ---------- Constants ----------
+VIC_BASE      = $d000
+D011          = $d011
+D016          = $d016
+D018          = $d018
+RASTER        = $d012
+IRQEN         = $d01a
+IRQSTAT       = $d019
+CIA2PRA       = $dd00
+
+SCREEN_RAM    = $0400
+COLOR_RAM     = $d800
+BITMAP_BASE   = $2000
+
+SCREEN_CENTER_X = 160
+SCREEN_CENTER_Y = 100
+
+; ---------- Zero page (safe) ----------
+PLOT_PTR_L    = $fb
+PLOT_PTR_H    = $fc
+
+; ---------- Variables ----------
+* = $c800
+ANGLE:              !byte 0
+FRAME_FLAG:         !byte 0
+
+; temp / math
+TMPL:               !byte 0
+TMPH:               !byte 0
+TEMP:               !byte 0
+TEMP2:              !byte 0
+
+; multiply state
+mulA:               !byte 0     ; multiplicand (signed)
+mulM:               !byte 0     ; multiplier  (signed)
+msign:              !byte 0
+prodL:              !byte 0
+prodH:              !byte 0
+
+; line state
+LINE_X_CUR:         !byte 0
+LINE_X_CUR_H:       !byte 0
+LINE_Y_CUR:         !byte 0
+LINE_X_END:         !byte 0
+LINE_X_END_H:       !byte 0
+LINE_Y_END:         !byte 0
+LINE_DX:            !byte 0
+LINE_DY:            !byte 0
+LINE_SX:            !byte 0
+LINE_SY:            !byte 0
+LINE_ERR:           !byte 0
+E2_TMP:             !byte 0
+NEG_DY:             !byte 0
+
+; vertex buffers (8 vertices)
+OldX:               !fill 8, $ff
+OldXH:              !fill 8, $ff
+OldY:               !fill 8, $ff
+NewX:               !fill 8, $ff
+NewXH:              !fill 8, $ff
+NewY:               !fill 8, $ff
+
+; AOS model (X,Y,Z per vertex)
+Model:              !fill 24,0   ; filled by InitCube
+
+; original cube data SOA
+CUBE_SIZE          = 40
+CubeX:
+  !byte  CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE,  CUBE_SIZE,  CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE,  CUBE_SIZE
+CubeY:
+  !byte  CUBE_SIZE,  CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE,  CUBE_SIZE,  CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE
+CubeZ:
+  !byte  CUBE_SIZE,  CUBE_SIZE,  CUBE_SIZE,  CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE, -CUBE_SIZE
+
+; ---------- BASIC stub ----------
+* = $0801
+  !word nextline, 2025
+  !text $9e,"49152",0
+nextline:
+  !word 0
+
+; ---------- Code ----------
+* = $c000
+
+Init:
+  sei
+  cld
+  ldx #$ff
+  txs
+
+  ; CPU port: RAM everywhere, I/O visible
+  lda #$37
+  sta $01
+
+  ; Bank 0 (bits 0..1 = %11)
+  lda CIA2PRA
+  and #%11111100
+  ora #%00000011
+  sta CIA2PRA
+
+  ; VIC: hi-res bitmap on, multicolor off, screen=$0400, bmp=$2000
+  lda D011
+  ora #%00100000
+  sta D011
+  lda #$00
+  sta D016
+  lda #%00011000
+  sta D018
+
+  ; border/background = black
+  lda #$00
+  sta VIC_BASE+$20
+  sta VIC_BASE+$21
+
+  ; blank display while clearing (DEN=0)
+  lda D011
+  and #%11101111
+  sta D011
+
+  jsr ClearScreenToBW     ; Screen RAM $0400..$07E7 = $01 (fg=1, bg=0)
+  jsr ClearColorBlack     ; Color RAM $D800..$DBE7 = $00 (1000 bytes exact)
+  jsr ClearBitmap8192     ; Full 8KiB bitmap clear
+
+  ; enable display (DEN=1)
+  lda D011
+  ora #%00010000
+  sta D011
+
+  jsr InitCube            ; Load Model from CubeX/Y/Z
+  jsr ProjectVertices
+  jsr DrawEdgesNew
+  jsr CopyNewToOld
+
+MainLoop:
+  jsr EraseEdgesOld
+  jsr ProjectVertices
+  jsr DrawEdgesNew
+  jsr CopyNewToOld
+
+  inc ANGLE
+  jmp MainLoop
+
+; ---------- Init cube to AOS ----------
+InitCube:
+  ldx #0         ; AOS offset
+  ldy #0         ; vertex index
+Icloop:
+  lda CubeX,y
+  sta Model+0,x
+  lda CubeY,y
+  sta Model+1,x
+  lda CubeZ,y
+  sta Model+2,x
+  inx
+  inx
+  inx
+  iny
+  cpy #8
+  bne Icloop
+  rts
+
+; ---------- Project 8 vertices ----------
+; Y-rotation only:
+; X' = X*cos - Z*sin
+; Z' = X*sin + Z*cos
+; Y unchanged (then >>1)
+ProjectVertices:
+  ldx #0         ; vertex index 0..7
+PvLoop:
+  txa
+  sta TEMP2
+  asl
+  clc
+  adc TEMP2
+  tay            ; Y = AOS offset (v*3)
+
+  ; load original X,Y,Z
+  lda Model+0,y
+  sta TMPL
+  lda Model+1,y
+  sta TEMP
+  lda Model+2,y
+  sta TMPH
+
+  ; cos,sin
+  ldy ANGLE
+  lda CosTable,y
+  sta mulM       ; cos
+  lda TMPL
+  jsr MulSigned7 ; A = (X*cos)>>7
+  sta TEMP2      ; store Xcos
+
+  ldy ANGLE
+  lda SinTable,y
+  sta mulM       ; sin
+  lda TMPH
+  jsr MulSigned7 ; A = (Z*sin)>>7
+  sta TEMP       ; reuse TEMP for Zsin
+
+  ; X' = Xcos - Zsin
+  lda TEMP2
+  sec
+  sbc TEMP
+  sta TMPL       ; X' (8-bit signed)
+
+  ; Z' = X*sin + Z*cos
+  ldy ANGLE
+  lda SinTable,y
+  sta mulM
+  lda TMPL       ; careful: use original X again -> reload from Model
+  lda Model+0,y  ; WRONG if used. Instead pull original X from Model with AOS Y—BUT Y holds angle now.
+  ; Safer: recompute: we still have original X in Model+0,(v*3).
+  txa
+  sta TEMP2
+  asl
+  clc
+  adc TEMP2
+  tay
+  lda Model+0,y
+  sta TEMP2      ; original X
+  lda mulM
+  sta mulM
+  lda TEMP2
+  jsr MulSigned7
+  sta TEMP2      ; Xsin
+
+  ldy ANGLE
+  lda CosTable,y
+  sta mulM
+  lda TMPH       ; original Z
+  jsr MulSigned7
+  sta TEMP       ; Zcos
+
+  lda TEMP2
+  clc
+  adc TEMP
+  sta TMPH       ; Z' (8-bit signed)
+
+  ; Perspective placeholder: >>1 signed (arith)
+  ; Xscreen = (X'>>1)+160 ; Yscreen = (Y>>1)+100
+  lda TMPL
+  jsr ShiftSigned1
+  clc
+  adc #SCREEN_CENTER_X
+  sta NewX,x
+  ; high byte
+  lda #0
+  adc #0
+  sta NewXH,x
+
+  lda Model+1,y  ; original Y
+  jsr ShiftSigned1
+  clc
+  adc #SCREEN_CENTER_Y
+  sta NewY,x
+
+  inx
+  cpx #8
+  bne PvLoop
+  rts
+
+; ---------- Copy new -> old ----------
+CopyNewToOld:
+  ldx #7
+CopyLp:
+  lda NewX,x
+  sta OldX,x
+  lda NewXH,x
+  sta OldXH,x
+  lda NewY,x
+  sta OldY,x
+  dex
+  bpl CopyLp
+  rts
+
+; ---------- Edge list ----------
+; 12 cube edges, ended by $ff
+EdgeList:
+  !byte 0,1, 1,2, 2,3, 3,0
+  !byte 4,5, 5,6, 6,7, 7,4
+  !byte 0,4, 1,5, 2,6, 3,7
+  !byte $ff
+
+; ---------- Draw edges from NEW ----------
+DrawEdgesNew:
+  ldy #0
+DenLoop:
+  lda EdgeList,y
+  cmp #$ff
+  beq DenDone
+  tax
+  lda NewXH,x
+  cmp #$ff
+  beq DenSkip
+  lda EdgeList+1,y
+  tax
+  lda NewXH,x
+  cmp #$ff
+  beq DenSkip
+
+  ; Load endpoints
+  lda EdgeList,y
+  tax
+  lda NewX,x
+  sta LINE_X_CUR
+  lda NewXH,x
+  sta LINE_X_CUR_H
+  lda NewY,x
+  sta LINE_Y_CUR
+
+  lda EdgeList+1,y
+  tax
+  lda NewX,x
+  sta LINE_X_END
+  lda NewXH,x
+  sta LINE_X_END_H
+  lda NewY,x
+  sta LINE_Y_END
+
+  jsr DrawLineXOR
+
+DenNext:
+  iny
+  iny
+  jmp DenLoop
+DenSkip:
+  iny
+  iny
+  jmp DenLoop
+DenDone:
+  rts
+
+; ---------- Erase edges from OLD (XOR toggles) ----------
+EraseEdgesOld:
+  ldy #0
+DeoLoop:
+  lda EdgeList,y
+  cmp #$ff
+  beq DeoDone
+  tax
+  lda OldXH,x
+  cmp #$ff
+  beq DeoSkip
+  lda EdgeList+1,y
+  tax
+  lda OldXH,x
+  cmp #$ff
+  beq DeoSkip
+
+  lda EdgeList,y
+  tax
+  lda OldX,x
+  sta LINE_X_CUR
+  lda OldXH,x
+  sta LINE_X_CUR_H
+  lda OldY,x
+  sta LINE_Y_CUR
+
+  lda EdgeList+1,y
+  tax
+  lda OldX,x
+  sta LINE_X_END
+  lda OldXH,x
+  sta LINE_X_END_H
+  lda OldY,x
+  sta LINE_Y_END
+
+  jsr DrawLineXOR
+
+DeoNext:
+  iny
+  iny
+  jmp DeoLoop
+DeoSkip:
+  iny
+  iny
+  jmp DeoLoop
+DeoDone:
+  rts
+
+; ---------- Draw line (XOR) — short safe branches ----------
+DrawLineXOR:
+  ; Quick reject Y if start or end out of [0,199]
+  lda LINE_Y_CUR
+  bmi DlExit
+  cmp #200
+  bcs DlExit
+  lda LINE_Y_END
+  bmi DlExit
+  cmp #200
+  bcs DlExit
+
+  ; dx = |x1 - x0| (clamped 0..255)
+  sec
+  lda LINE_X_END
+  sbc LINE_X_CUR
+  sta LINE_DX
+  lda LINE_X_END_H
+  sbc LINE_X_CUR_H
+  beq DlDXok
+  ; different high byte → cap
+  lda #$ff
+  sta LINE_DX
+DlDXok:
+
+  ; dy = |y1 - y0|
+  lda LINE_Y_END
+  sec
+  sbc LINE_Y_CUR
+  bpl DlDyPos
+  eor #$ff
+  clc
+  adc #1
+DlDyPos:
+  sta LINE_DY
+
+  ; sx = sign(x1 - x0)
+  lda LINE_X_END_H
+  cmp LINE_X_CUR_H
+  bcc DlSXneg
+  bne DlSXpos
+  lda LINE_X_END
+  cmp LINE_X_CUR
+  bcc DlSXneg
+DlSXpos:
+  lda #1
+  sta LINE_SX
+  jmp DlSY
+DlSXneg:
+  lda #$ff
+  sta LINE_SX
+
+DlSY:
+  ; sy = sign(y1 - y0)
+  lda LINE_Y_END
+  cmp LINE_Y_CUR
+  bcc DlSYneg
+  lda #1
+  sta LINE_SY
+  jmp DlErr
+DlSYneg:
+  lda #$ff
+  sta LINE_SY
+
+DlErr:
+  lda LINE_DX
+  sec
+  sbc LINE_DY
+  sta LINE_ERR
+
+DlLoop:
+  jsr PlotPixelXOR
+
+  ; done?
+  lda LINE_X_CUR
+  cmp LINE_X_END
+  bne DlCont
+  lda LINE_X_CUR_H
+  cmp LINE_X_END_H
+  bne DlCont
+  lda LINE_Y_CUR
+  cmp LINE_Y_END
+  beq DlExit
+
+DlCont:
+  lda LINE_ERR
+  asl
+  sta E2_TMP
+
+  ; if e2 >= -dy → X step
+  lda LINE_DY
+  eor #$ff
+  clc
+  adc #1
+  sta NEG_DY
+  lda E2_TMP
+  sec
+  sbc NEG_DY
+  bmi DlSkipX
+
+  lda LINE_ERR
+  sec
+  sbc LINE_DY
+  sta LINE_ERR
+  lda LINE_X_CUR
+  clc
+  adc LINE_SX
+  sta LINE_X_CUR
+  lda LINE_X_CUR_H
+  adc #0
+  sta LINE_X_CUR_H
+
+DlSkipX:
+  ; if e2 < dx → Y step
+  lda E2_TMP
+  sec
+  sbc LINE_DX
+  bcs DlLoop
+
+  lda LINE_ERR
+  clc
+  adc LINE_DX
+  sta LINE_ERR
+  lda LINE_Y_CUR
+  clc
+  adc LINE_SY
+  sta LINE_Y_CUR
+  jmp DlLoop
+
+DlExit:
+  rts
+
+; ---------- Plot Pixel (XOR) ----------
+; Uses LINE_X_CUR(_H), LINE_Y_CUR
+PlotPixelXOR:
+  ; X bounds 0..319
+  lda LINE_X_CUR_H
+  cmp #2
+  bcs PpExit
+  cmp #1
+  bne PpXok
+  lda LINE_X_CUR
+  cmp #64
+  bcs PpExit
+PpXok:
+  ; Y 0..199
+  lda LINE_Y_CUR
+  bmi PpExit
+  cmp #200
+  bcs PpExit
+
+  ; 1) Base address for Y>>3 block
+  lda LINE_Y_CUR
+  lsr
+  lsr
+  lsr
+  tax
+  lda PlotAddrLTable,x
+  sta PLOT_PTR_L
+  lda PlotAddrHTable,x
+  sta PLOT_PTR_H
+
+  ; 2) Add fine row offset ( (Y & 7)*40 )
+  lda LINE_Y_CUR
+  and #7
+  tax
+  lda PLOT_PTR_L
+  clc
+  adc PlotYOffsetL,x
+  sta PLOT_PTR_L
+  lda PLOT_PTR_H
+  adc PlotYOffsetH,x
+  sta PLOT_PTR_H
+
+  ; 3) Add column byte offset (X>>3) — 16-bit add (TMPL/TMPH)
+  lda LINE_X_CUR
+  sta TMPL
+  lda LINE_X_CUR_H
+  sta TMPH
+  ldy #3
+PpShift:
+  lsr TMPH
+  ror TMPL
+  dey
+  bne PpShift
+
+  lda PLOT_PTR_L
+  clc
+  adc TMPL
+  sta PLOT_PTR_L
+  lda PLOT_PTR_H
+  adc TMPH
+  sta PLOT_PTR_H
+
+  ; 4) Bit mask (bit for (7-(X&7)))
+  lda LINE_X_CUR
+  and #7
+  tax
+  lda BitMaskTable,x
+
+  ; 5) XOR write
+  ldy #0
+  eor (PLOT_PTR_L),y
+  sta (PLOT_PTR_L),y
+
+PpExit:
+  rts
+
+; ---------- Clears ----------
+ClearScreenToBW:
+  lda #<SCREEN_RAM
+  sta PLOT_PTR_L
+  lda #>SCREEN_RAM
+  sta PLOT_PTR_H
+  lda #$01            ; fg=1 (white), bg=0 (black)
+  ldx #3              ; 3 pages (768 bytes)
+CsPg:
+  ldy #0
+CsLp:
+  sta (PLOT_PTR_L),y
+  iny
+  bne CsLp
+  inc PLOT_PTR_H
+  dex
+  bne CsPg
+  ; tail 232 bytes at $0700..$07E7
+  ldy #0
+CsTail:
+  sta (PLOT_PTR_L),y
+  iny
+  cpy #232
+  bne CsTail
+  rts
+
+ClearColorBlack:
+  lda #<COLOR_RAM
+  sta PLOT_PTR_L
+  lda #>COLOR_RAM
+  sta PLOT_PTR_H
+  lda #$00
+  ldx #3              ; 3*256=768
+CcPg:
+  ldy #0
+CcLp:
+  sta (PLOT_PTR_L),y
+  iny
+  bne CcLp
+  inc PLOT_PTR_H
+  dex
+  bne CcPg
+  ; tail 232 bytes to reach 1000 total
+  ldy #0
+CcTail:
+  sta (PLOT_PTR_L),y
+  iny
+  cpy #232
+  bne CcTail
+  rts
+
+ClearBitmap8192:
+  lda #<BITMAP_BASE
+  sta PLOT_PTR_L
+  lda #>BITMAP_BASE
+  sta PLOT_PTR_H
+  lda #0
+  ldx #32             ; 32*256 = 8192
+CbPg:
+  ldy #0
+CbLp:
+  sta (PLOT_PTR_L),y
+  iny
+  bne CbLp
+  inc PLOT_PTR_H
+  dex
+  bne CbPg
+  rts
+
+; ---------- Signed helpers ----------
+; A = signed(A) >> 1 (arithmetic)
+ShiftSigned1:
+  bmi SsNeg
+  lsr
+  rts
+SsNeg:
+  sec
+  ror
+  rts
+
+; 8×8 signed multiply with >>7 scaling.
+; Input: A=multiplicand (signed), mulM=multiplier (signed)
+; Output: A = (A*mulM) >> 7  (signed, rounded toward -inf by arithmetic shifts)
+MulSigned7:
+  sta mulA
+  lda mulM
+  ; sign fold
+  lda #0
+  sta msign
+
+  lda mulA
+  bpl MsApos
+  eor #$ff
+  clc
+  adc #1
+  sta mulA
+  lda msign
+  eor #$01
+  sta msign
+MsApos:
+  lda mulM
+  bpl MsMpos
+  eor #$ff
+  clc
+  adc #1
+  sta mulM
+  lda msign
+  eor #$01
+  sta msign
+MsMpos:
+
+  lda #0
+  sta prodL
+  sta prodH
+  ldx #8
+MsLoop:
+  ; test multiplier LSB
+  lda mulM
+  lsr
+  sta mulM
+  bcc MsNoAdd
+  ; add multiplicand to product
+  clc
+  lda prodL
+  adc mulA
+  sta prodL
+  lda prodH
+  adc #0
+  sta prodH
+MsNoAdd:
+  ; shift multiplicand left (place value)
+  asl mulA
+  rol prodH           ; keep upper guard bit (optional)
+  dex
+  bne MsLoop
+
+  ; normalize: product in prodH:prodL, now >>7 (arithmetic)
+  ldy #7
+MsShr7:
+  ; if negative, use SEC+ROR pair for sign extension
+  lda prodH
+  bmi MsNegStep
+  lsr prodH
+  ror prodL
+  jmp MsNext
+MsNegStep:
+  sec
+  ror prodH
+  ror prodL
+MsNext:
+  dey
+  bne MsShr7
+
+  ; apply final sign if needed
+  lda msign
+  and #$01
+  beq MsOut
+  ; negate 16-bit prod
+  lda prodL
+  eor #$ff
+  sta prodL
+  lda prodH
+  eor #$ff
+  sta prodH
+  clc
+  lda prodL
+  adc #1
+  sta prodL
+  lda prodH
+  adc #0
+  sta prodH
+MsOut:
+  lda prodL
+  rts
+
+; ---------- Tables ----------
+BitMaskTable:
+  !byte $80,$40,$20,$10,$08,$04,$02,$01
+
+; 25 row blocks (Y>>3) for bitmap at $2000
+; Low bytes repeat $00,$40,$80,$C0
+PlotAddrLTable:
+  !byte $00,$40,$80,$c0,$00,$40,$80,$c0,$00,$40,$80,$c0,$00,$40,$80,$c0,$00,$40,$80,$c0,$00,$40,$80,$c0,$00
+; High bytes of $2000 base across 25 blocks (skip $24,$29,$2e,$33,$38 as per 320*8 stride pattern)
+PlotAddrHTable:
+  !byte $20,$21,$22,$23,$25,$26,$27,$28,$2a,$2b,$2c,$2d,$2f,$30,$31,$32,$34,$35,$36,$37,$39,$3a,$3b,$3c,$3e
+
+; (Y&7)*40
+PlotYOffsetL:
+  !byte $00,$28,$50,$78,$a0,$c8,$f0,$18
+PlotYOffsetH:
+  !byte $00,$00,$00,$00,$00,$00,$00,$01
+
+; ---------- Sine/Cos (256 entries each, amplitude 127) ----------
+; Minimal, compact-ish tables. Values are integer approximations.
+SinTable:
+  !byte 0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45
+  !byte 48,51,54,57,60,63,65,68,71,73,76,78,81,83,85,88
+  !byte 90,92,94,96,98,100,102,104,106,107,109,110,112,113,114,115
+  !byte 117,118,119,120,121,121,122,123,123,124,124,124,125,125,125,125
+  !byte 125,125,124,124,124,123,123,122,121,121,120,119,118,117,116,115
+  !byte 114,113,112,110,109,107,106,104,102,100,98,96,94,92,90,88
+  !byte 85,83,81,78,76,73,71,68,65,63,60,57,54,51,48,45
+  !byte 42,39,36,33,30,27,24,21,18,15,12,9,6,3,0,-3
+  !byte -6,-9,-12,-15,-18,-21,-24,-27,-30,-33,-36,-39,-42,-45,-48,-51
+  !byte -54,-57,-60,-63,-65,-68,-71,-73,-76,-78,-81,-83,-85,-88,-90,-92
+  !byte -94,-96,-98,-100,-102,-104,-106,-107,-109,-110,-112,-113,-114,-115,-117,-118
+  !byte -119,-120,-121,-121,-122,-123,-123,-124,-124,-124,-125,-125,-125,-125,-125,-125
+  !byte -124,-124,-124,-123,-123,-122,-121,-121,-120,-119,-118,-117,-116,-115,-114,-113
+  !byte -112,-110,-109,-107,-106,-104,-102,-100,-98,-96,-94,-92,-90,-88,-85,-83
+  !byte -81,-78,-76,-73,-71,-68,-65,-63,-60,-57,-54,-51,-48,-45,-42,-39
+  !byte -36,-33,-30,-27,-24,-21,-18,-15,-12,-9,-6,-3
+
+CosTable:
+  !byte 127,127,126,126,125,124,123,122,121,120,119,118,117,116,114,113
+  !byte 112,110,109,107,106,104,102,100,98,96,94,92,90,88,85,83
+  !byte 81,78,76,73,71,68,65,63,60,57,54,51,48,45,42,39
+  !byte 36,33,30,27,24,21,18,15,12,9,6,3,0,-3,-6,-9
+  !byte -12,-15,-18,-21,-24,-27,-30,-33,-36,-39,-42,-45,-48,-51,-54,-57
+  !byte -60,-63,-65,-68,-71,-73,-76,-78,-81,-83,-85,-88,-90,-92,-94,-96
+  !byte -98,-100,-102,-104,-106,-107,-109,-110,-112,-113,-114,-115,-117,-118,-119,-120
+  !byte -121,-121,-122,-123,-123,-124,-124,-124,-125,-125,-125,-125,-125,-125,-124,-124
+  !byte -124,-123,-123,-122,-121,-121,-120,-119,-118,-117,-116,-115,-114,-113,-112,-110
+  !byte -109,-107,-106,-104,-102,-100,-98,-96,-94,-92,-90,-88,-85,-83,-81,-78
+  !byte -76,-73,-71,-68,-65,-63,-60,-57,-54,-51,-48,-45,-42,-39,-36,-33
+  !byte -30,-27,-24,-21,-18,-15,-12,-9,-6,-3,0,3,6,9,12,15
+  !byte 18,21,24,27,30,33,36,39,42,45,48,51,54,57,60,63
+  !byte 65,68,71,73,76,78,81,83,85,88,90,92,94,96,98,100
+  !byte 102,104,106,107,109,110,112,113,114,115,117,118,119,120,121,121
+  !byte 122,123,123,124,124,124,125,125,125,125
