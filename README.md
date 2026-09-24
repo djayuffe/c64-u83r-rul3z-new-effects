@@ -91,4 +91,8 @@ their visual ideas to its shared C64 text-mode framework.
 
 ## Live VICE capture
 
-![Running U83R RUL3Z new-effects build](assets/live-vice.png)
+Final completion closes the Cube V3 diagonal connector bug: connector lines now use depth-vector offset tables (`CvDiagXOffset` / `CvDiagYOffset`) instead of using the same step for X and Y. This prevents shallow 3D depth vectors from overshooting vertically.
+
+![Running Mega NewFX build](assets/live-vice.png)
+
+This is a native VICE capture of the byte-identical `megademo.prg` produced by the sibling `c64-u83r-rul3z-new-effects` build; the source and generated PRG SHA-256 values match exactly.
