@@ -88,3 +88,7 @@ tables to avoid diagonal overshoot.
 The original supplied references are kept under `source_material/` for
 traceability. They use their own standalone video models; this project adapts
 their visual ideas to its shared C64 text-mode framework.
+
+## Live VICE capture
+
+![Running U83R RUL3Z new-effects build](assets/live-vice.png)
