@@ -1,6 +1,8 @@
-# U83R RUL3Z — new effects only build
+# C64 U83R RUL3Z — New Effects
 
-This package removes the previous active effect sequence and replaces it with four new effects adapted from the uploaded source material.
+A Commodore 64 text-mode demo built with ACME. Its active sequence contains four
+effects adapted from the bundled source material, a shared raster-driven SID
+engine, title cards, and a protected bottom-row scroller.
 
 ## Active effects
 
@@ -9,9 +11,11 @@ This package removes the previous active effect sequence and replaces it with fo
 2. GOLD TRENCH
 3. CUBE V3 ROTOR FINAL
 
-## Removed from active dispatch
+## Effect runtime
 
-The old title/matrix/rings/plasma/starfield/trench/cube/etc. sequence is not referenced by `InitTbl` or `UpdateTbl`.  The active runtime uses only:
+`NUM_PARTS` is four. `InitTbl` and `UpdateTbl` are the authoritative dispatch
+tables; older effects are not reachable from them. Each effect owns rendering
+rows 4–22, while row 24 is exclusively reserved for `GlobalScroller`.
 
 ```asm
 InitTbl:
@@ -32,18 +36,55 @@ The original uploaded sources are included under `source_material/` for traceabi
 ## Build
 
 ```bash
-cd mega
 ./build.sh
 x64sc -autostartprgmode 1 -autostart build/megademo.prg
 ```
 
-`build.sh` runs `tools/static_audit.py` before ACME.
+Run the commands from the repository root. `build.sh` first runs
+`tools/static_audit.py`, then creates `build/megademo.prg` and a convenience
+copy at `megademo.prg`. ACME and VICE (`x64sc`) must be installed separately.
+
+## Controls
+
+- `Space`: pause or resume the bottom scroller.
+- `+`: increase scroller speed, up to six pixels per frame.
+- `-`: decrease scroller speed, down to one pixel per frame.
+
+## Code map
+
+- `src/megademo.s`: BASIC loader, VIC setup, raster IRQ, SID engine, effect
+  renderers, transitions, and scroller.
+- `InitTbl` / `UpdateTbl`: four-effect lifecycle dispatch.
+- `NewFxPulsePolish`: beat-driven accents using rows that cannot touch the
+  scroller.
+- `tools/static_audit.py`: validates dispatch, source assets, row-24 safety,
+  branch targets, and regression markers before assembly.
+- `source_material/`: original reference material retained for provenance;
+  these files are not assembled directly.
+
+## Verification
+
+```bash
+python3 tools/static_audit.py
+./build.sh
+```
+
+The audit checks structural invariants; assembly confirms ACME syntax and
+symbol resolution. The generated PRG has a BASIC `SYS 2061` loader.
 
 
-## Final perfect pass
+## Rendering and music
 
 The final pass binds each new effect to a matching SID style and makes all four active renderers directly react to `sndPulse`.  A tiny shared `NewFxPulsePolish` overlay adds beat-driven accent cells on rows 4..22 only, leaving row 24 exclusively for the scroller.
 
-## 100% completion pass
+`NewFxPulsePolish` adds sound-reactive accents after the active renderer. It
+uses only rows 4, 6, 8, 10, 13, 16, 19, and 22; the global scroller keeps sole
+ownership of row 24. The Cube V3 finale builds a connected wireframe (front
+and rear squares plus depth connectors), with independent X/Y depth-offset
+tables to avoid diagonal overshoot.
 
-Final completion closes the Cube V3 diagonal connector bug: connector lines now use depth-vector offset tables (`CvDiagXOffset` / `CvDiagYOffset`) instead of using the same step for X and Y. This prevents shallow 3D depth vectors from overshooting vertically.
+## Source material
+
+The original supplied references are kept under `source_material/` for
+traceability. They use their own standalone video models; this project adapts
+their visual ideas to its shared C64 text-mode framework.

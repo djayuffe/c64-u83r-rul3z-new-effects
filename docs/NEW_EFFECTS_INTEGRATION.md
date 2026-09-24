@@ -14,7 +14,11 @@ Adapted from the lowres pure-raster corridor upload.  It uses the existing dista
 Adapted from the clean gold trench upload.  It renders row-perspective rails with a gold palette and protected row-24 scroller.
 
 ### 3. CUBE V3 ROTOR FINAL
-Adapted from the fixed cube-v3 upload.  The standalone source has its own memory/video model; the integrated version keeps the shared production framework and uses a table-driven rotor-point cube visual.
+Adapted from the fixed cube-v3 upload. The standalone source has its own
+memory/video model; the integrated version keeps the shared production
+framework and builds a connected text-mode wireframe: front and rear squares
+plus four depth connectors. Independent X/Y diagonal-offset tables prevent
+shallow vectors from overshooting vertically.
 
 ## Safety
 

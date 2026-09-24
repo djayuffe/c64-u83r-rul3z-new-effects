@@ -1,5 +1,14 @@
 # New effects swap pass
 
+## Maintenance corrections
+
+- Corrected the README build location: commands run from the repository root,
+  not a nonexistent `mega` subdirectory.
+- Documented the current controls, runtime boundaries, build outputs, and
+  verification path.
+- Corrected the Cube V3 documentation to describe the connected wireframe
+  renderer rather than the removed point-placeholder renderer.
+
 ## Changed
 
 - Set `NUM_PARTS = 4`.
