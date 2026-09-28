@@ -1,98 +1,77 @@
-# C64 U83R RUL3Z — New Effects
+# C64 U83R RUL3Z: New Effects
 
-A Commodore 64 text-mode demo built with ACME. Its active sequence contains four
-effects adapted from the bundled source material, a shared raster-driven SID
-engine, title cards, and a protected bottom-row scroller.
+[![CI](https://github.com/djayuffe/c64-u83r-rul3z-new-effects/actions/workflows/ci.yml/badge.svg)](https://github.com/djayuffe/c64-u83r-rul3z-new-effects/actions/workflows/ci.yml)
 
-## Active effects
+An ACME-built Commodore 64 megademo with four music-reactive text-mode scenes,
+raster-timed presentation, title-card transitions, and a persistent bottom-row
+scroller. The release PRG starts from a BASIC `SYS 2061` stub and runs on a
+standard PAL C64 configuration.
 
-0. WIRE CUBE CLEAN
-1. INFINITY CORRIDOR
-2. GOLD TRENCH
-3. CUBE V3 ROTOR FINAL
+## Gallery
 
-## Effect runtime
+These are direct captures of the locally built `build/megademo.prg` running in
+VICE 3.9. They are runtime frames, not mockups.
 
-`NUM_PARTS` is four. `InitTbl` and `UpdateTbl` are the authoritative dispatch
-tables; older effects are not reachable from them. Each effect owns rendering
-rows 4–22, while row 24 is exclusively reserved for `GlobalScroller`.
+| Effect | Runtime capture | What it does |
+| --- | --- | --- |
+| Wire Cube Clean | ![Wire Cube Clean running in VICE](assets/vice-wire-cube.png) | Sparse mirrored wire accents pulse across the active field. |
+| Infinity Corridor | ![Infinity Corridor running in VICE](assets/vice-infinity-corridor.png) | Distance and column-warp tables create a colour-cycling tunnel. |
+| Gold Trench | ![Gold Trench running in VICE](assets/vice-gold-trench.png) | Perspective rails, a vanishing line, and beat-synced crossbars form the trench. |
+| Cube V3 Rotor | ![Cube V3 Rotor running in VICE](assets/vice-cube-v3-rotor.png) | A connected front/rear wire cube rotates through stable, table-driven geometry. |
 
-```asm
-InitTbl:
-        !word nw_init, ic_init, gt_init, cv_init
-UpdateTbl:
-        !word nw_update, ic_update, gt_update, cv_update
-```
+## Features
 
-## Source material bundled
+- Four active scenes only: Wire Cube Clean, Infinity Corridor, Gold Trench,
+  and Cube V3 Rotor.
+- A shared SID-driven `sndPulse` signal modulates every effect.
+- Raster IRQ presentation with transitions and an always-available row-24
+  scroller.
+- A real Cube V3 wireframe: front and rear squares, corner joints, and four
+  independent X/Y depth-vector connectors.
+- A pre-assembly static audit that protects dispatch integrity, branch targets,
+  bundled provenance, and the scroller row.
 
-The original uploaded sources are included under `source_material/` for traceability:
+## Build and run
 
-- `deepseek_asm_20251022_1659c4.txt`
-- `cube_v3_0_FULLY_FIXED.asm`
-- `InfinityCorridor_lowres_v3f_pureraster.zip`
-- `goldtrensh_v1_2_clean.zip`
-
-## Build
+Requirements: [ACME](https://sourceforge.net/projects/acme-crossass/) and an
+emulator such as [VICE](https://vice-emu.sourceforge.io/).
 
 ```bash
-./build.sh
+make
 x64sc -autostartprgmode 1 -autostart build/megademo.prg
 ```
 
-Run the commands from the repository root. `build.sh` first runs
-`tools/static_audit.py`, then creates `build/megademo.prg` and a convenience
-copy at `megademo.prg`. ACME and VICE (`x64sc`) must be installed separately.
+`./build.sh` is a portable wrapper for `make`. The sole generated program is
+`build/megademo.prg`; no duplicate root-level PRG is created.
+
+For the complete local verification, including the committed release hashes:
+
+```bash
+make verify
+```
 
 ## Controls
 
-- `Space`: pause or resume the bottom scroller.
-- `+`: increase scroller speed, up to six pixels per frame.
-- `-`: decrease scroller speed, down to one pixel per frame.
+- `Space`: pause/resume the bottom scroller.
+- `+`: increase scroller speed (maximum six pixels per frame).
+- `-`: decrease scroller speed (minimum one pixel per frame).
 
-## Code map
+## Runtime design
 
-- `src/megademo.s`: BASIC loader, VIC setup, raster IRQ, SID engine, effect
-  renderers, transitions, and scroller.
-- `InitTbl` / `UpdateTbl`: four-effect lifecycle dispatch.
-- `NewFxPulsePolish`: beat-driven accents using rows that cannot touch the
-  scroller.
-- `tools/static_audit.py`: validates dispatch, source assets, row-24 safety,
-  branch targets, and regression markers before assembly.
-- `source_material/`: original reference material retained for provenance;
-  these files are not assembled directly.
+`InitTbl` and `UpdateTbl` are the authoritative lifecycle tables and contain
+exactly four targets: `nw`, `ic`, `gt`, and `cv`. Scene renderers own rows 4–22;
+row 24 remains exclusively owned by `GlobalScroller`. `NewFxPulsePolish` uses
+only named safe rows and is intentionally disabled for Cube V3, whose renderer
+clears and redraws its entire field each frame.
 
-## Verification
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the code map and
+[docs/AUDIT.md](docs/AUDIT.md) for the checks behind the release.
 
-```bash
-python3 tools/static_audit.py
-./build.sh
-```
+## Provenance and licensing
 
-The audit checks structural invariants; assembly confirms ACME syntax and
-symbol resolution. The generated PRG has a BASIC `SYS 2061` loader.
-
-
-## Rendering and music
-
-The final pass binds each new effect to a matching SID style and makes all four active renderers directly react to `sndPulse`.  A tiny shared `NewFxPulsePolish` overlay adds beat-driven accent cells on rows 4..22 only, leaving row 24 exclusively for the scroller.
-
-`NewFxPulsePolish` adds sound-reactive accents after the active renderer. It
-uses only rows 4, 6, 8, 10, 13, 16, 19, and 22; the global scroller keeps sole
-ownership of row 24. The Cube V3 finale builds a connected wireframe (front
-and rear squares plus depth connectors), with independent X/Y depth-offset
-tables to avoid diagonal overshoot.
-
-## Source material
-
-The original supplied references are kept under `source_material/` for
-traceability. They use their own standalone video models; this project adapts
-their visual ideas to its shared C64 text-mode framework.
-
-## Live VICE capture
-
-Final completion closes the Cube V3 diagonal connector bug: connector lines now use depth-vector offset tables (`CvDiagXOffset` / `CvDiagYOffset`) instead of using the same step for X and Y. This prevents shallow 3D depth vectors from overshooting vertically.
-
-![Running Mega NewFX build](assets/live-vice.png)
-
-This is a native VICE capture of the byte-identical `megademo.prg` produced by the sibling `c64-u83r-rul3z-new-effects` build; the source and generated PRG SHA-256 values match exactly.
+`source_material/` preserves the supplied reference files that informed the
+four adaptations. They are not assembled directly and may carry their own
+provenance or licensing; this repository does not assert a new license over
+them. The integration source, build tooling, documentation, and project-owned
+assets are Copyright © 2026 Ulf Bertilsson and licensed under
+[GPL-3.0-or-later](LICENSE). Details are in [NOTICE](NOTICE).

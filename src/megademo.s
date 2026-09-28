@@ -1,5 +1,7 @@
 ; ============================================================================
 ;  U83R RUL3Z - NEW EFFECTS MEGADEMO   (C64 / ACME)
+;  Copyright (C) 2026 Ulf Bertilsson
+;  SPDX-License-Identifier: GPL-3.0-or-later
 ; ----------------------------------------------------------------------------
 ;  Current/old effects are removed from active dispatch.  Active sequence now
 ;  uses only new effects adapted from the uploaded source material:

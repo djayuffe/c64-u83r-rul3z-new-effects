@@ -1,0 +1,26 @@
+name: Verify release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Install ACME
+        run: sudo apt-get update && sudo apt-get install --yes acme
+      - name: Rebuild and verify release manifest
+        run: make verify SHA256SUM=sha256sum
+      - name: Upload verified program
+        uses: actions/upload-artifact@v4
+        with:
+          name: c64-u83r-rul3z-new-effects-${{ github.event.release.tag_name }}
+          path: build/megademo.prg
+          if-no-files-found: error

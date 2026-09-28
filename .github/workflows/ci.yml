@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ACME
+        run: sudo apt-get update && sudo apt-get install --yes acme
+      - name: Audit, build, and verify hashes
+        run: make verify SHA256SUM=sha256sum
+      - name: Upload C64 program
+        uses: actions/upload-artifact@v4
+        with:
+          name: c64-u83r-rul3z-new-effects-prg
+          path: build/megademo.prg
+          if-no-files-found: error
